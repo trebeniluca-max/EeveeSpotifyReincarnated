@@ -35,9 +35,11 @@ English-only settings in **EeveeSpotify → Pixie Download Manager**.
 
 ## Downloads
 
-**[IPA announcements — @glongqforks](https://t.me/glongqforks)**. This source update uploads no IPA or DEB files.
+**[Download Spotify 9.1.92 + EeveeSpotify + Pixie Manager v1.4 — Telegram post](https://t.me/glongqforks/23)**
 
-**[Previous Pixie v1 jailbreak packages](https://github.com/Glongq/EeveeSpotifyReincarnated/releases/tag/pixie-v1)** target Spotify 9.1.88. They have not been rebuilt from the current v1.3 sources. To reproduce those packages, check out tag `pixie-v1` and use its build guide.
+Download the IPA from the linked post. Updates and release announcements: [@glongqforks](https://t.me/glongqforks). This repository contains source code; no IPA or DEB files are hosted here. GitHub's “Source code” archives are not installable apps.
+
+**[Previous Pixie v1 jailbreak packages](https://github.com/Glongq/EeveeSpotifyReincarnated/releases/tag/pixie-v1)** target Spotify 9.1.88. They have not been rebuilt from the current v1.4 sources. To reproduce those packages, check out tag `pixie-v1` and use its build guide.
 
 GitHub's automatic source archives contain source code, not an installable app.
 
