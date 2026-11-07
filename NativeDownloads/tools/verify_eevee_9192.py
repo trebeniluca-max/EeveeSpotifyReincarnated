@@ -11,6 +11,9 @@ import patch_imports as audio
 import patch_key_request_mode as mode
 import patch_native_restrictions as quota
 import patch_native_trace as trace
+import patch_export as export
+from export_release_materials import notices
+from pixie_target import PROFILE
 
 APP = 'Payload/Spotify.app/'
 EXECUTABLE = APP + 'Spotify'
@@ -52,13 +55,18 @@ def main():
         prepared, quota_report = quota.patch(prepared)
         prepared, _ = mode.patch(prepared, runtime_selectable=False)
         patched, trace_report = trace.patch(prepared)
-        # Code outside the three explicit observation entries/padding spans
-        # must remain byte-for-byte unchanged by the diagnostic patch.
+        patched, export_report = export.patch(patched)
+        # Code outside the explicit observation entries/padding spans (the three diagnostic
+        # boundaries and the Pixie 1.4 export boundaries) must remain byte-for-byte unchanged.
         spans = []
         for point in trace.POINTS:
             _, address, cave, _, _ = point
             spans.extend([(address-quota.PREFERRED, address-quota.PREFERRED+4),
                           (cave-quota.PREFERRED, cave-quota.PREFERRED+len(trace.trampoline(point)))])
+        for point in export.ALL_POINTS:
+            _, address, cave, _, _ = point
+            spans.extend([(address-quota.PREFERRED, address-quota.PREFERRED+4),
+                          (cave-quota.PREFERRED, cave-quota.PREFERRED+len(export.trampoline(point)))])
         position = 0
         for start, end in sorted(spans):
             require(prepared[position:start] == patched[position:start], 'Unexpected diagnostic change')
@@ -81,16 +89,16 @@ def main():
             rejected += 1
         else:
             raise ValueError('Repeated trace patch was accepted')
-        report = {'spotify_version': '9.1.92', 'pixie_version': '1.3',
+        report = {'spotify_version': PROFILE['spotify_version'], 'pixie_version': PROFILE['pixie_version'],
                   'spotify_uuid': quota.UUID.hex(), 'manager_vtable': hex(manager_table),
                   'manager_setter_slot': 65, 'restriction_fields_unchanged': ['0x2b8', '0x2c0', '0x2c8', '0x2d0', '0x2d8'],
                   'hook_target_names_present': required, 'rejected_invalid_patch_cases': rejected,
-                  'quota': quota_report, 'diagnostic_boundaries': trace_report,
+                  'quota': quota_report, 'diagnostic_boundaries': trace_report, 'export_boundaries': export_report,
                   'phone_runtime_tested': False}
         if args.output:
             with ZipFile(args.output) as result:
                 require(len(result.namelist()) == len(set(result.namelist())), 'Duplicate IPA entries')
-                require(set(result.namelist()) - set(source.namelist()) == {PROBE}, 'Unexpected added IPA entries')
+                require(set(result.namelist()) - set(source.namelist()) == {PROBE, *notices()}, 'Unexpected added IPA entries')
                 require(not (set(source.namelist()) - set(result.namelist())), 'Removed IPA entries')
                 changed = [entry.filename for entry in source.infolist()
                            if (entry.CRC, entry.file_size) !=

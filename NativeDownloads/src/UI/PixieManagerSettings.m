@@ -1,6 +1,9 @@
 #import "Localization.h"
 #import "DownloadCompatibility.h"
 #import "OfflineDevices.h"
+#import "TrackExport.h"
+#import "OfflineLibraryUI.h"
+#import "NativeDownloadQuality.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -10,6 +13,7 @@
 #import "DiagnosticTrace.h"
 #import "TrackJournal.h"
 #import "GitHubIcon.h"
+#import "PixiePageController.h"
 #include <math.h>
 
 static NSString *const SAPUIChanged=@"SAPDownloadSettingsChanged";
@@ -128,7 +132,7 @@ static UITableViewCell *SAPSettingsCell(UITableView *table,NSString *title,NSStr
     return cell;
 }
 
-@interface SAPSettingsTable : UITableViewController
+@interface SAPSettingsTable : SAPPixiePageController
 @property(nonatomic,strong) NSDictionary *snapshot;
 @property(nonatomic,strong) id changeObserver;
 @property(nonatomic,strong) SAPBottomChrome *bottomChrome;
@@ -169,16 +173,6 @@ static UITableViewCell *SAPSettingsCell(UITableView *table,NSString *title,NSStr
 }
 - (void)dealloc {if(_changeObserver)[NSNotificationCenter.defaultCenter removeObserver:_changeObserver];}
 - (void)refresh {self.snapshot=[SAPSettingsActions snapshot];[self.tableView reloadData];}
-- (BOOL)conformsToProtocol:(Protocol *)protocol {
-    // Match Eevee's SPTPageViewController: Spotify also asks for the Swift
-    // protocol _TtP19Tome_PageAttributes17SPTPageController_, whose displayed
-    // name includes its module. Checking only the legacy short name crashes
-    // SPNavigationController when it revalidates the current page.
-    if([NSStringFromProtocol(protocol)containsString:@"SPTPageController"])return YES;
-    return [super conformsToProtocol:protocol];
-}
-- (NSString *)spt_pageIdentifier {return @"EeveeSpotify";}
-- (NSURL *)spt_pageURI {return [NSURL URLWithString:@""];}
 - (void)tableView:(UITableView *)table willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
     if([view isKindOfClass:UITableViewHeaderFooterView.class]) {
         UITableViewHeaderFooterView *header=(id)view;
@@ -216,7 +210,7 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
 }
 - (void)viewWillDisappear:(BOOL)animated {self.detailsGeneration++;[super viewWillDisappear:animated];}
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)table {return 4;}
-- (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {return section==0?6:section==1?8:section==2?5:5;}
+- (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {return section==0?6:section==1?8:section==2?6:5;}
 - (NSString *)tableView:(UITableView *)table titleForHeaderInSection:(NSInteger)section {return @[@"Audio",@"Status",@"Offline checks",@"Hooks / traces"][section];}
 - (NSString *)tableView:(UITableView *)table titleForFooterInSection:(NSInteger)section {
     if(section==0)return SAPDiagnosticsEnabled()?@"Observed values only. Refresh reads the existing diagnostics snapshot.":@"Diagnostics are off. Collection and polling are stopped. Retained observations may be stale; missing data is unavailable.";
@@ -225,6 +219,7 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
     return @"Detailed events remain in Send log.";
 }
 - (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)index {
+    if(index.section==2 && index.row==5)return SAPSettingsCell(table,@"Check current track",@"Read this track's native offline status",@"checkmark.circle.fill",UIColor.systemGreenColor,NO);
     NSDictionary *report=self.snapshot[@"report"]?:@{};NSString *label,*value;
     if(index.section==1) {
         NSArray *labels=@[@"Downloaded",@"Downloading",@"Waiting",@"Paused",@"Errors",@"Limit reached",@"Not downloaded",@"Expired"];
@@ -252,6 +247,11 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
     }
     return SAPPlainSettingsCell(label,value);
 }
+- (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)index {
+    [table deselectRowAtIndexPath:index animated:YES];
+    if(index.section==2 && index.row==5)[SAPSettingsActions perform:SAPSettingsVerify];
+}
+
 @end
 
 @interface SAPOfflineDevicesSettings : SAPSettingsTable
@@ -356,107 +356,92 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
         self.busy=NO;[self refresh];[self showResult:error?@"Enable not confirmed":@"Offline registration confirmed" message:error?:@"Spotify confirms offline access for this exact device. Audio playback has not been tested."];
     });
 }
-// Row editing is a UIKit capability. Freshness/authorization is checked when an
-// explicit action is requested, so stale snapshots do not silently remove the swipe.
-- (NSDictionary *)removableDeviceAtIndexPath:(NSIndexPath *)index {
-    if(self.busy || index.section!=0 || index.row<0 || (NSUInteger)index.row>=self.devices.count)return nil;
-    NSDictionary *device=self.devices[index.row];
-    return ![device[@"synthetic_record"]boolValue] && [device[@"offline_enabled"]boolValue] ? device : nil;
-}
-- (BOOL)tableView:(UITableView *)table canEditRowAtIndexPath:(NSIndexPath *)index {
-    return [self removableDeviceAtIndexPath:index]!=nil;
-}
-- (UITableViewCellEditingStyle)tableView:(UITableView *)table editingStyleForRowAtIndexPath:(NSIndexPath *)index {
-    return [self removableDeviceAtIndexPath:index] ? UITableViewCellEditingStyleDelete : UITableViewCellEditingStyleNone;
-}
-- (void)requestDisable:(NSDictionary *)device {
-    if(self.busy)return;
-    if(self.actionsAllowed && [device[@"selection_token"]length]){[self confirmDisable:device];return;}
-    self.busy=YES;self.readError=nil;[self.tableView reloadData];
-    NSUInteger expected=++self.refreshGeneration;
-    SAPPreviewOfflineDeviceSlots(^(NSDictionary *plan,NSString *error){
-        if(expected!=self.refreshGeneration)return;
-        self.busy=NO;self.plan=plan;self.readError=error;[self.tableView reloadData];
-        if(!self.view.window)return;
-        if(!self.actionsAllowed) {
-            [self showResult:@"Cannot change offline access" message:error?:plan[@"detail"]?:@"Spotify's device state could not be confirmed. Play one track online on this device, then refresh."];
-            return;
-        }
-        NSDictionary *selected=nil;
-        for(NSDictionary *candidate in self.devices) {
-            if(![candidate[@"synthetic_record"]boolValue] &&
-               [candidate[@"device_id"]isEqual:device[@"device_id"]] &&
-               [candidate[@"cache_id"]isEqual:device[@"cache_id"]] &&
-               [candidate[@"selection_token"]length]){selected=candidate;break;}
-        }
-        if(!selected){[self showResult:@"Device list changed" message:@"This offline registration is no longer in the refreshed list. Nothing was changed."];return;}
-        [self confirmDisable:selected];
-    });
-}
 - (void)confirmDisable:(NSDictionary *)device {
-    if(!self.actionsAllowed){[self requestDisable:device];return;}
+    if(!self.actionsAllowed)return;
     NSString *cache=device[@"cache_id"],*suffix=[cache substringFromIndex:cache.length>8?cache.length-8:0];
     NSString *identifier=device[@"device_id"];NSString *deviceSuffix=[identifier substringFromIndex:identifier.length>8?identifier.length-8:0];
     UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"Disable offline access?" message:[NSString stringWithFormat:@"%@ · Device %@ · Cache %@\n\nCached tracks on this copy may become unavailable offline. The registration and free slot will be verified after the command.",device[@"name"]?:@"Spotify device",deviceSuffix,suffix] preferredStyle:UIAlertControllerStyleAlert];
     [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [confirm addAction:[UIAlertAction actionWithTitle:@"Disable offline access" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action){
-        if(!self.actionsAllowed) {
-            [self dismissViewControllerAnimated:YES completion:^{[self showResult:@"Device list expired" message:@"Refresh the list and review this device again. Nothing was changed."];}];
-            return;
-        }
-        self.busy=YES;[self.tableView reloadData];
+        if(!self.actionsAllowed)return;self.busy=YES;[self.tableView reloadData];
         SAPDisableOfflineDevice(self.plan[@"id"],device[@"selection_token"],^(NSDictionary *result,NSString *error){
             self.busy=NO;[self refresh];[self showResult:error?@"Disable not confirmed":@"Offline access disabled" message:error?:[NSString stringWithFormat:@"Free device slots: %@ / %@.",result[@"free_licenses"],result[@"max_licenses"]]];
         });
     }]];[self presentViewController:confirm animated:YES completion:nil];
 }
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)table trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)index {
-    NSDictionary *device=[self removableDeviceAtIndexPath:index];if(!device)return nil;
-    UIContextualAction *action=[UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"Remove" handler:^(UIContextualAction *action,UIView *view,void (^done)(BOOL)){done(YES);[self requestDisable:device];}];
+    if(index.section!=0||(NSUInteger)index.row>=self.devices.count||!self.actionsAllowed)return nil;
+    NSDictionary *device=self.devices[index.row];if([device[@"synthetic_record"]boolValue]||![device[@"offline_enabled"]boolValue])return nil;
+    UIContextualAction *action=[UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive title:@"Remove" handler:^(UIContextualAction *action,UIView *view,void (^done)(BOOL)){done(YES);[self confirmDisable:device];}];
     UISwipeActionsConfiguration *configuration=[UISwipeActionsConfiguration configurationWithActions:@[action]];configuration.performsFirstActionWithFullSwipe=NO;return configuration;
-}
-- (void)tableView:(UITableView *)table commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)index {
-    NSDictionary *device=[self removableDeviceAtIndexPath:index];
-    if(style==UITableViewCellEditingStyleDelete && device){[table setEditing:NO animated:YES];[self requestDisable:device];}
 }
 - (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)index {[table deselectRowAtIndexPath:index animated:YES];if(index.section==1)[self enableCurrent];}
 @end
 
 @interface SAPDownloadsSettings : SAPSettingsTable
 @property(nonatomic) BOOL checkingCompatibility;
+@property(nonatomic) BOOL qualityOffer;
+@property(nonatomic,strong) id qualityObserver;
 @end
 @implementation SAPDownloadsSettings
-- (void)viewDidLoad {[super viewDidLoad];self.title=SAPL(@"Менеджер загрузок Pixie",@"Pixie Download Manager");}
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)table {return 4;}
+- (void)viewDidLoad {
+    [super viewDidLoad];self.title=SAPL(@"Менеджер загрузок Pixie",@"Pixie Download Manager");
+    [self updateQualityOffer];
+    __weak typeof(self) weak=self;
+    self.qualityObserver=[NSNotificationCenter.defaultCenter addObserverForName:SAPNativeDownloadQualityOfferDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note){[weak updateQualityOffer];}];
+}
+- (void)dealloc {if(_qualityObserver)[NSNotificationCenter.defaultCenter removeObserver:_qualityObserver];}
+// The download-quality offer is a real first section with one row in the same style as every other menu row.
+// It is shown only while Spotify's download quality is Normal and has never been High; a tap hides it for good.
+- (void)updateQualityOffer {
+    BOOL offer=SAPShouldOfferNativeDownloadQuality();
+    if(offer==self.qualityOffer)return;
+    self.qualityOffer=offer;[self.tableView reloadData];
+}
+- (void)viewWillAppear:(BOOL)animated {[super viewWillAppear:animated];[self updateQualityOffer];}
+- (void)qualityOfferTapped {
+    // Persist suppression before native navigation starts; the notification then removes the row.
+    SAPDismissNativeDownloadQualityOfferAndOpenSettings();
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)table {return 5+(self.qualityOffer?1:0);}
 - (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {
-    if(section==0)return [self.snapshot[@"download_active"]boolValue]?4:3;
+    if(self.qualityOffer){if(section==0)return 1;section--;}
+    if(section==0)return [self.snapshot[@"download_active"]boolValue]?3:2;
     if(section==1)return 3;
-    if(section==2)return 3;
+    if(section==3)return 4;
+    if(section==2)return 2;
     return 2;
 }
 - (NSString *)tableView:(UITableView *)table titleForHeaderInSection:(NSInteger)section {
-    return @[@"Download",@"Download compatibility",@"Diagnostics",@"Me"][section];
+    if(self.qualityOffer){if(section==0)return nil;section--;}
+    return @[@"Download",@"Download compatibility",@"Export",@"Diagnostics",@"Me"][section];
 }
 - (NSString *)tableView:(UITableView *)table titleForFooterInSection:(NSInteger)section {
+    if(self.qualityOffer){if(section==0)return nil;section--;}
     if(section==0) {
         NSDictionary *startup=self.snapshot[@"jailbreak_bootstrap"];
         if(startup&&![startup[@"native_patches_ready"]boolValue])return [NSString stringWithFormat:@"Pixie could not initialize downloads (%@). Supported Spotify: 9.1.92. Detected: %@. Menu and logs remain available.",startup[@"reason"],startup[@"detected_spotify_version"]];
-        return @"Tracks are saved in Spotify for offline listening.";
+        return @"Downloads stay in Spotify. Audio export creates files you can save to Files or share.";
     }
     if(section==1) {
         NSDictionary *mode=self.snapshot[@"key_request_mode"];
-        return [NSString stringWithFormat:@"%@\n\n5 licenses = up to 5 devices with offline music.\n\nOnly change settings in this menu if downloads are not working.",mode[@"detail"]?:@""];
+        return [NSString stringWithFormat:@"%@\n\nOnly change settings in this menu if downloads are not working.",mode[@"detail"]?:@""];
     }
-    if(section==3)return @"Spotify 9.1.92 · Eevee-Pixie v1.3.";
-    if(section==2)return @"Enable Diagnostics for detailed passive events.";
+    if(section==4)return @"Spotify 9.1.92 · Eevee-Pixie v1.4.";
+    if(section==2)return @"Export downloaded Spotify audio to external apps or Files from Pixie or Spotify’s Share as file option. Choose a destination in the share sheet. The selected format applies to future exports.";
+    if(section==3)return @"Enable Diagnostics for detailed passive events.";
     return nil;
 }
 - (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)index {
+    if(self.qualityOffer) {
+        if(index.section==0)return SAPSettingsCell(table,@"Download quality is Normal",@"Tap to switch to High in Spotify settings",@"arrow.up.circle.fill",UIColor.systemGreenColor,YES);
+        index=[NSIndexPath indexPathForRow:index.row inSection:index.section-1];
+    }
     NSString *title,*subtitle=nil,*symbol;UIColor *color;BOOL chevron=NO;
     if(index.section==0) {
-        NSArray *titles=@[[self.snapshot[@"download_active"]boolValue]?SAPL(@"Статус скачивания трека",@"Track download status"):SAPL(@"Скачать текущий трек",@"Download current track"),SAPL(@"Скачать альбом текущего трека",@"Download current track's album"),SAPL(@"Проверить текущий трек",@"Check current track"),SAPL(@"Отменить скачивание",@"Cancel download")];
-        title=titles[index.row];symbol=@[@"arrow.down.circle.fill",@"square.stack.fill",@"checkmark.circle.fill",@"xmark.circle.fill"][index.row];
-        color=index.row==3?UIColor.systemOrangeColor:UIColor.systemGreenColor;
+        NSArray *titles=@[[self.snapshot[@"download_active"]boolValue]?@"Track download status":@"Download current track",@"Download current track's album",@"Cancel download"];
+        title=titles[index.row];symbol=@[@"arrow.down.circle.fill",@"square.stack.fill",@"xmark.circle.fill"][index.row];
+        color=index.row==2?UIColor.systemOrangeColor:UIColor.systemGreenColor;
     }else if(index.section==1) {
         NSDictionary *mode=self.snapshot[@"key_request_mode"];
         if(index.row==2)return SAPSettingsCell(table,@"Offline devices",@"Review registrations and offline access",@"externaldrive.badge.person.crop",UIColor.systemOrangeColor,YES);
@@ -478,25 +463,48 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
         cell.selectionStyle=restore?UITableViewCellSelectionStyleDefault:UITableViewCellSelectionStyleNone;
         cell.userInteractionEnabled=restore;
         return cell;
-    }else if(index.section==3) {
+    }else if(index.section==2) {
+        if(index.row==1)return SAPSettingsCell(table,@"Downloaded tracks",@"Browse Spotify offline music",@"music.note.list",UIColor.systemGreenColor,YES);
+        UITableViewCell *cell=SAPSettingsCell(table,@"Use Ogg format",nil,@"waveform",UIColor.systemBlueColor,NO);
+        UISwitch *toggle=[UISwitch new];toggle.on=[SAPAudioExportFormat()isEqual:@"ogg"];toggle.accessibilityLabel=@"Use Ogg format";
+        [toggle addTarget:self action:@selector(oggFormatChanged:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=toggle;
+        cell.selectionStyle=UITableViewCellSelectionStyleNone;return cell;
+    }else if(index.section==4) {
         title=index.row==0?@"GitHub":@"Telegram channel";
         subtitle=index.row==0?@"Glongq/Vitrine-Pixie":@"@glongqforks";
         symbol=index.row==0?@"pixie.github":@"paperplane.fill";
         color=index.row==0?UIColor.whiteColor:UIColor.systemBlueColor;chevron=YES;
     }else {
-        title=@[@"Diagnostics",@"Audio diagnostics",@"Reset log"][index.row];
-        symbol=@[@"slider.horizontal.3",@"waveform.path.ecg",@"trash.fill"][index.row];color=index.row==2?UIColor.systemGrayColor:UIColor.systemTealColor;chevron=index.row==1;
-        if(index.row==2)subtitle=@"Clear previous logs and start a fresh history";
+        title=@[@"Diagnostics",@"Audio diagnostics",@"Send log",@"Reset log"][index.row];
+        symbol=@[@"slider.horizontal.3",@"waveform.path.ecg",@"square.and.arrow.up",@"trash.fill"][index.row];color=index.row==3?UIColor.systemGrayColor:UIColor.systemTealColor;chevron=index.row==1;
+        if(index.row==3)subtitle=@"Clear previous logs and start a fresh history";
     }
     UITableViewCell *cell=SAPSettingsCell(table,title,subtitle,symbol,color,chevron);
-    if(index.section==2 && index.row==0) {
+    if(index.section==3 && index.row==0) {
         UISwitch *toggle=[UISwitch new];toggle.on=SAPDiagnosticsEnabled();
         toggle.accessibilityLabel=SAPL(@"Диагностика",@"Diagnostics");toggle.accessibilityIdentifier=@"SpotifyDiagnosticsSwitch";
         [toggle addTarget:self action:@selector(diagnosticsChanged:) forControlEvents:UIControlEventValueChanged];cell.accessoryView=toggle;
     }
     return cell;
 }
-- (void)diagnosticsChanged:(UISwitch *)toggle {BOOL before=SAPDiagnosticsEnabled();SAPDiagnosticsSetEnabled(toggle.on);SAP_JOURNAL_ACTION(@"diagnostics_changed",@{@"before":@(before),@"after":@(SAPDiagnosticsEnabled())});[self refresh];}
+- (void)oggFormatChanged:(UISwitch *)toggle {
+    [NSUserDefaults.standardUserDefaults setObject:toggle.on?@"ogg":@"m4a" forKey:@"PixieExportFormat"];
+}
+- (void)applyDiagnostics:(BOOL)enabled {
+    BOOL before=SAPDiagnosticsEnabled();SAPDiagnosticsSetEnabled(enabled);
+    SAP_JOURNAL_ACTION(@"diagnostics_changed",@{@"before":@(before),@"after":@(SAPDiagnosticsEnabled())});[self refresh];
+}
+- (void)requestDiagnostics:(BOOL)enabled {
+    if(enabled==SAPDiagnosticsEnabled() || self.presentedViewController)return;
+    if(!enabled){[self applyDiagnostics:NO];return;}
+    UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"Are you sure?" message:@"Enable detailed diagnostics logging?" preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"No" style:UIAlertActionStyleCancel handler:nil]];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Yes" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){[self applyDiagnostics:YES];}]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+- (void)diagnosticsChanged:(UISwitch *)toggle {
+    BOOL requested=toggle.on;[toggle setOn:SAPDiagnosticsEnabled() animated:YES];[self requestDiagnostics:requested];
+}
 - (void)slotMessage:(NSString *)title message:(NSString *)message {
     UIAlertController *alert=[UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
@@ -504,13 +512,22 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
 }
 - (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)index {
     [table deselectRowAtIndexPath:index animated:YES];
+    if(self.qualityOffer) {
+        if(index.section==0){SAP_TRACE("ui","pixie_menu_selection",0,@{@"title":self.title?:@"",@"item":@"download_quality_offer"});[self qualityOfferTapped];return;}
+        index=[NSIndexPath indexPathForRow:index.row inSection:index.section-1];
+    }
     SAP_TRACE("ui","pixie_menu_selection",0,@{@"title":self.title?:@"",@"section":@(index.section),@"row":@(index.row)});
-    if(index.section==3) {
+    if(index.section==4) {
         NSURL *url=[NSURL URLWithString:index.row==0?@"https://github.com/Glongq/Vitrine-Pixie":@"https://t.me/glongqforks"];
         [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];return;
     }
-    if(index.section==2 && index.row==0){BOOL before=SAPDiagnosticsEnabled();SAPDiagnosticsSetEnabled(!before);SAP_JOURNAL_ACTION(@"diagnostics_changed",@{@"before":@(before),@"after":@(SAPDiagnosticsEnabled())});[self refresh];return;}
-    if(index.section==2 && index.row==2){[SAPSettingsActions perform:SAPSettingsResetJournal];return;}
+    if(index.section==2) {
+        if(index.row==1){SAPShowOfflineLibrary(self);return;}
+        return;
+    }
+    if(index.section==3 && index.row==0){[self requestDiagnostics:!SAPDiagnosticsEnabled()];return;}
+    if(index.section==3 && index.row==2){[SAPSettingsActions perform:SAPSettingsSendLog];return;}
+    if(index.section==3 && index.row==3){[SAPSettingsActions perform:SAPSettingsResetJournal];return;}
     if(index.section==1) {
         if(self.checkingCompatibility)return;
         if(index.row==2){[self.navigationController pushViewController:[SAPOfflineDevicesSettings new] animated:YES];return;}
@@ -536,12 +553,15 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
         [choice addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:choice animated:YES completion:nil];return;
     }
-    if(index.section==2 && index.row==1) {
+    if(index.section==3 && index.row==1) {
         SAPDetailsSettings *page=[SAPDetailsSettings new];
         [self.navigationController pushViewController:page animated:YES];return;
     }
     SAPSettingsAction action;
-    if(index.section==0)action=index.row==0?SAPSettingsDownload:(index.row==1?SAPSettingsDownloadAlbum:(index.row==2?SAPSettingsVerify:SAPSettingsCancelDownload));
+    if(index.section==0) {
+        const SAPSettingsAction actions[]={SAPSettingsDownload,SAPSettingsDownloadAlbum,SAPSettingsCancelDownload};
+        if(index.row<0||index.row>=3)return;action=actions[index.row];
+    }
     else return;
     [SAPSettingsActions perform:action];
     if(action==SAPSettingsCancelDownload)[self refresh];
@@ -567,7 +587,7 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
     return self;
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)table {return 1;}
-- (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {return 2;}
+- (NSInteger)tableView:(UITableView *)table numberOfRowsInSection:(NSInteger)section {return 1;}
 - (NSString *)tableView:(UITableView *)table titleForHeaderInSection:(NSInteger)section {return SAPL(@"Менеджер загрузок Pixie",@"Pixie Download Manager");}
 - (void)tableView:(UITableView *)table willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
     if([view isKindOfClass:UITableViewHeaderFooterView.class]) {
@@ -578,13 +598,11 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
     }
 }
 - (UITableViewCell *)tableView:(UITableView *)table cellForRowAtIndexPath:(NSIndexPath *)index {
-    if(index.row==0)return SAPSettingsCell(table,@"Manage downloads",@"Current track, mode and download status",@"arrow.down.circle.fill",UIColor.systemGreenColor,YES);
-    return SAPSettingsCell(table,@"Send log",@"One package with report, events and download history",@"square.and.arrow.up",UIColor.systemBlueColor,NO);
+    return SAPSettingsCell(table,@"Manage downloads",@"Current track, mode and download status",@"arrow.down.circle.fill",UIColor.systemGreenColor,YES);
 }
 - (void)tableView:(UITableView *)table didSelectRowAtIndexPath:(NSIndexPath *)index {
     [table deselectRowAtIndexPath:index animated:YES];
     if(index.row==0)[self.settingsHost.navigationController pushViewController:[SAPDownloadsSettings new] animated:YES];
-    else [SAPSettingsActions perform:SAPSettingsSendLog];
 }
 @end
 
@@ -593,11 +611,24 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
 @property(nonatomic,weak) UIScrollView *scroll;
 @property(nonatomic,strong) SAPDownloadsEntry *entry;
 @property(nonatomic,strong) SAPBottomChrome *bottomChrome;
-@property(nonatomic) CGFloat baseBottom,appliedBottom;
+@property(nonatomic) CGFloat baseBottom,appliedBottom,measuredWidth,measuredHeight;
+@property(nonatomic,copy) NSString *measuredCategory;
 @property(nonatomic) BOOL observing,updating;
 - (void)layout;
 @end
 @implementation SAPSettingsAttachment
+// The entry is a non-scrolling table whose height is whatever its rows, section header and footer need. Measure it
+// (once per width and text size) instead of reserving a fixed height: a fixed one left a blank gap and pushed
+// the group too low whenever its row count changed.
+- (CGFloat)entryHeightForWidth:(CGFloat)width {
+    NSString *category=self.scroll.traitCollection.preferredContentSizeCategory;
+    if(self.measuredHeight>0 && fabs(self.measuredWidth-width)<0.5 && [self.measuredCategory isEqual:category])return self.measuredHeight;
+    UITableView *table=self.entry.view;
+    table.frame=CGRectMake(0,0,width,800);[table reloadData];[table layoutIfNeeded];
+    CGFloat height=ceil(table.contentSize.height);
+    if(height<1)return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]scaledValueForValue:130];
+    self.measuredWidth=width;self.measuredHeight=height;self.measuredCategory=category;return height;
+}
 - (void)dealloc {
     if(_observing && _scroll)[_scroll removeObserver:self forKeyPath:@"contentSize" context:SAPContentSizeContext];
 }
@@ -605,7 +636,7 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
     if(self.updating || !self.scroll || !self.host.view.window)return;
     self.updating=YES;
     UIScrollView *scroll=self.scroll;
-    CGFloat height=[[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]scaledValueForValue:232];
+    CGFloat height=[self entryHeightForWidth:scroll.bounds.size.width];
     if(fabs(scroll.contentInset.bottom-self.appliedBottom)>0.5)self.baseBottom=scroll.contentInset.bottom;
     // Eevee ends its SwiftUI List with a separate, empty Spacer section.
     // Start after the final real footer, before that reserved blank space.
@@ -667,16 +698,13 @@ static void SAPSettingsLayout(id self,SEL selector) {originalSettingsLayout(self
 static id SAPVitrinePageInit(id self,SEL selector,NSString *title,NSString *intro,NSArray *sections,NSString *footer) {
     if([title isEqualToString:@"Vitrine"]) {
         id (*pageRow)(NSString *,UIViewController *(^)(void))=dlsym(RTLD_DEFAULT,"SGPageRow");
-        id (*actionRow)(NSString *,NSString *,void (^)(void))=dlsym(RTLD_DEFAULT,"SGActionRow");
         id (*withTile)(id,NSString *,UIColor *)=dlsym(RTLD_DEFAULT,"SGWithTile");
         id (*section)(NSString *,NSArray *)=dlsym(RTLD_DEFAULT,"SGSection");
-        if(pageRow && actionRow && withTile && section) {
+        if(pageRow && withTile && section) {
             id row=pageRow(SAPL(@"Менеджер загрузок Pixie",@"Pixie Download Manager"),^UIViewController *{return [SAPDownloadsSettings new];});
             row=withTile(row,@"arrow.down.circle.fill",UIColor.systemGreenColor);
-            id log=actionRow(@"Send log",@"Report, actions, download history and Vitrine diagnostics",^{[SAPSettingsActions perform:SAPSettingsSendLog];});
-            log=withTile(log,@"square.and.arrow.up",UIColor.systemBlueColor);
-            id group=section(nil,@[row,log]);
-            if(group){sections=[sections arrayByAddingObject:group];SAP_TRACE("ui","pixie_rows_added_to_vitrine",0,@{@"added_rows":@2,@"root_title":title});}
+            id group=section(nil,@[row]);
+            if(group){sections=[sections arrayByAddingObject:group];SAP_TRACE("ui","pixie_rows_added_to_vitrine",0,@{@"added_rows":@1,@"root_title":title});}
         }else {
             settingsInstallStatus=@"vitrine_row_factories_unavailable";
         }

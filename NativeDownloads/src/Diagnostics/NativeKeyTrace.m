@@ -2,6 +2,7 @@
 #import "NativeKeyTrace.h"
 #import "NativeTracePatch.h"
 #import "DiagnosticTrace.h"
+#import "ExportSites.h"
 #import "WireProto.h"
 #import <dlfcn.h>
 #import <mach/mach.h>
@@ -102,7 +103,7 @@ static void observe(unsigned kind,const uint64_t *frame,uintptr_t image) {
     }
     uintptr_t functor=0,wrapper=0,owner=0,descriptor=0;BOOL functorRead=readBytes(frame[0],&functor,sizeof(functor));SAPTraceID op=0;uint8_t fileID[20]={0},ownerFile[20]={0};
     if(functorRead&&functor)readBytes(functor,&wrapper,sizeof(wrapper));if(wrapper)readBytes(wrapper+8,&owner,sizeof(owner));
-    BOOL ownerFileRead=owner&&readBytes(owner+0xc8,&descriptor,sizeof(descriptor))&&readBytes(descriptor+4,ownerFile,20);
+    BOOL ownerFileRead=owner&&readBytes(owner+SAPExportOwnerDescriptorOffset,&descriptor,sizeof(descriptor))&&readBytes(descriptor+4,ownerFile,20);
     NSMutableArray *candidates=[NSMutableArray array];BOOL exactIdentity=YES;
     if(functorRead){os_unfair_lock_lock(&mapLock);
         for(unsigned pass=0;pass<2;pass++){
@@ -130,12 +131,17 @@ static void observe(unsigned kind,const uint64_t *frame,uintptr_t image) {
     }
     SAP_TRACE("native_key",kind==1?"success_callback_invoked":"failure_callback_invoked",op,facts);
 }
+static _Atomic(SAPOfflineKeySuccessObserver) offlineSuccessObserver;
+void SAPSetOfflineKeySuccessObserver(SAPOfflineKeySuccessObserver observer) {
+    atomic_store(&offlineSuccessObserver,observer);
+}
 __attribute__((visibility("default"))) void SAPTraceNativeBoundary(unsigned kind,const uint64_t *registers) {
-    // The result/key pointer is never dereferenced. The static trampoline saves
-    // all volatile arguments, vectors and FP/condition state around this call.
-    if(!SAPTraceIsActive())return;
+    SAPOfflineKeySuccessObserver observer=kind==1?atomic_load(&offlineSuccessObserver):NULL;
+    if(!observer&&!SAPTraceIsActive())return;
     Dl_info location={0};if(!dladdr(__builtin_return_address(0),&location)||!supported((uintptr_t)location.dli_fbase))return;
-    @autoreleasepool {@try {observe(kind,registers,(uintptr_t)location.dli_fbase);}
+    @autoreleasepool {@try {
+        if(observer)observer(registers,(uintptr_t)location.dli_fbase);
+        if(SAPTraceIsActive())observe(kind,registers,(uintptr_t)location.dli_fbase);}
         @catch(NSException *exception){SAP_TRACE("native_key","observer_failed",0,@{@"exception":exception.name?:@"unknown",@"native_flow_modified":@NO});}}
 }
 NSDictionary *SAPNativeKeyTraceReport(void) {

@@ -2,14 +2,14 @@
 from pathlib import Path
 import hashlib
 import json
-from pixie_target import validate_sources, resolve_source, target_header
+from pixie_target import PROFILE, validate_sources, resolve_source, target_header
 
 ROOT = Path(__file__).resolve().parents[2]
 
 def main():
     validate_sources()
     assert resolve_source("TargetProfile.h").read_text() == target_header()
-    manifest = json.loads((ROOT / "NativeDownloads/provenance-pixie-v1.3.json").read_text())
+    manifest = json.loads((ROOT / f"NativeDownloads/provenance-pixie-v{PROFILE['pixie_version']}.json").read_text())
     assert manifest["spotify_version"] == "9.1.92"
     for relative, expected in manifest["source_sha256_by_file"].items():
         path = ROOT / relative
@@ -21,6 +21,9 @@ def main():
                            ("OfflineLimits.h", limits_header()),
                            ("NativeKeyModePatch.h", key_header()),
                            ("NativeTracePatch.h", header())]:
+        assert resolve_source(name).read_text() == expected, name
+    from export_headers import headers as export_headers
+    for name, expected in export_headers().items():
         assert resolve_source(name).read_text() == expected, name
     for path in (ROOT / "NativeDownloads/tools").glob("*.py"):
         compile(path.read_text(), str(path), "exec")

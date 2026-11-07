@@ -13,10 +13,15 @@ from patch_imports import patch as patch_audio_imports
 from patch_native_restrictions import patch as patch_limits, guard_header, limits_header, layout
 from patch_key_request_mode import patch as patch_key_mode, key_header
 from patch_native_trace import patch as patch_native_trace,header as native_trace_header
+from patch_export import patch as patch_export
+from strip_stale_signature import strip_stale_signature
+from export_headers import headers as export_headers
+from export_release_materials import notices, retain_relink_sources
+from companion_build import build_companion
 from patch_offline import patch_reminder
 from signing_metadata import sign_preserving_entitlements
 
-from pixie_target import PROFILE, ROOT, companion_sources, include_directories, resolve_source, validate_sources
+from pixie_target import PROFILE, ROOT, resolve_source, validate_sources
 UUID = bytes.fromhex(PROFILE["uuid"])
 
 
@@ -29,7 +34,7 @@ def main():
     parser.add_argument("ipa", type=Path)
     parser.add_argument("--eevee-dylib", type=Path, help="EeveeSpotify rebuilt from the local sources")
     parser.add_argument("--output", type=Path, default=ROOT.parent / "outputs" /
-        datetime.now().strftime("build-%Y%m%d-%H%M%S-%f") / "Spotify-9.1.92-EeveeSpotify-Pixie-v1.3.ipa")
+        datetime.now().strftime("build-%Y%m%d-%H%M%S-%f") / "Spotify-9.1.92-EeveeSpotify-Pixie-v1.4.ipa")
     args = parser.parse_args()
     validate_sources()
     source = args.ipa.resolve()
@@ -52,6 +57,9 @@ def main():
         raise RuntimeError("Native key-mode header is out of sync")
     if resolve_source("NativeTracePatch.h").read_text() != native_trace_header():
         raise RuntimeError("Native trace header is out of sync")
+    for name, expected in export_headers().items():
+        if resolve_source(name).read_text() != expected:
+            raise RuntimeError(f"Generated export header is out of sync: {name}")
 
     with ZipFile(source) as archive:
         info_name = "Payload/Spotify.app/Info.plist"
@@ -70,10 +78,11 @@ def main():
     patched, limits = patch_limits(patched)
     patched, key = patch_key_mode(patched, runtime_selectable=False)
     patched, native_trace = patch_native_trace(patched)
+    patched, export = patch_export(patched)
+    patched, stale_bytes = strip_stale_signature(patched)
     key['implementation']='verified static observation boundary restores fixed w2=0 before the original indirect call'
     key['configuration_source']='verified_static_trace_argument'
     output.parent.mkdir(parents=True, exist_ok=True)
-    sdk = subprocess.check_output(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], text=True).strip()
     with tempfile.TemporaryDirectory(prefix="eevee-9192-") as temporary:
         temporary = Path(temporary)
         staged_eevee = temporary / "EeveeSpotify.dylib"
@@ -84,15 +93,7 @@ def main():
         run("xcrun", "dyld_info", "-validate_only", staged_eevee)
         eevee = staged_eevee
         companion = temporary / "SpotifyAudioProbe.dylib"
-        run("xcrun", "clang", "-dynamiclib", "-arch", "arm64", "-target", "arm64-apple-ios15.0",
-            "-isysroot", sdk, "-fobjc-arc", "-std=gnu11", "-O2", "-fvisibility=hidden",
-            "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-nullability-completeness",
-            "-Werror=implicit-function-declaration", *("-I" + str(path) for path in include_directories()),
-            *companion_sources(),
-            "-framework", "AudioToolbox", "-framework", "Foundation", "-framework", "UIKit",
-            "-framework", "AVFAudio", "-framework", "CoreGraphics", "-framework", "AVFoundation",
-            "-framework", "CoreMedia", "-framework", "Network", "-framework", "ImageIO", "-framework", "QuartzCore", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "-o", companion)
-        run("codesign", "--force", "--sign", "-", "--timestamp=none", companion)
+        build_companion(companion, temporary)
         binary = temporary / "Spotify"
         binary.write_bytes(patched)
         binary.chmod(0o755)
@@ -108,6 +109,8 @@ def main():
                 replacement = binary.read_bytes() if member.filename == executable else eevee.read_bytes() if eevee and member.filename == "Payload/Spotify.app/Frameworks/EeveeSpotify.dylib" else original.read(member.filename)
                 result.writestr(member, replacement)
             result.write(companion, "Payload/Spotify.app/Frameworks/SpotifyAudioProbe.dylib")
+            for name, data in notices().items():
+                result.writestr(name, data)
 
     with ZipFile(output) as check:
         if check.testzip() is not None:
@@ -115,6 +118,7 @@ def main():
     print(json.dumps({"output": str(output), "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
                       "spotify_uuid": UUID.hex(), "audio_imports": audio,
                       "native_limits": limits, "key_request_mode": key, "native_observation": native_trace,
+                      "export_observation": export, "stale_signature_bytes_removed": stale_bytes, "relink_sources": retain_relink_sources(output),
                       "signing_metadata": signing_metadata,
                       "eevee_native_download_reminder": reminder}, indent=2))
 

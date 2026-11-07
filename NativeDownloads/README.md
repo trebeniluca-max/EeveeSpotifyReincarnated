@@ -1,6 +1,6 @@
 # Pixie Manager 1.3 — EeveeSpotify 7.0.0 / Spotify 9.1.92
 
-Current source tree and companion IPA target. Start with [the build guide](../BUILD-pixie-v1.3.md).
+Current source tree and companion IPA target. Start with [the build guide](../BUILD-pixie-v1.4.md).
 
 Embedding Pixie in another tweak? See the [integration and file map](docs/INTEGRATION-MAP.md),
 including public entry points and the implementation filename migration table.

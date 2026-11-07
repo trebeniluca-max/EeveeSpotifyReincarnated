@@ -4,7 +4,7 @@
 > **This is Glongq's independently maintained fork**, not an official EeveeSpotify or Spotify release.
 > Original project: **[SideloadLabs/EeveeSpotifyReincarnated](https://github.com/SideloadLabs/EeveeSpotifyReincarnated)**.
 
-**Current version: Pixie Manager v1.3** · Spotify **9.1.92** · EeveeSpotify **7.0.0**
+**Current version: Pixie Manager v1.4** · Spotify **9.1.92** · EeveeSpotify **7.0.0**
 
 **Fork maintainer:** [Glongq](https://github.com/Glongq)
 
@@ -14,8 +14,10 @@
 
 ## What's New
 
-- Updated to Spotify 9.1.92 · Pixie Manager v1.3
-- Refactored Pixie code and clarified the source structure for integration
+- Export downloaded tracks to files: M4A (default) or Ogg
+- Share audio files straight from the Spotify share menu
+- Downloaded tracks manager: browse by artist and release, select, export or delete
+- Faster artist downloads
 
 ## Pixie
 
@@ -49,7 +51,7 @@ Historical baseline downloads and offline playback were verified by the maintain
 
 ## Source and build
 
-See [BUILD-pixie-v1.3.md](BUILD-pixie-v1.3.md) for the current IPA build commands and [source provenance](NativeDownloads/provenance-pixie-v1.3.json) for source hashes. See the [integration and file map](NativeDownloads/docs/INTEGRATION-MAP.md), [module ownership](NativeDownloads/README.md) and [data contracts](NativeDownloads/docs/CONTRACTS.md). Historical tooling remains available in Git history.
+See [BUILD-pixie-v1.4.md](BUILD-pixie-v1.4.md) for the current IPA build commands and [source provenance](NativeDownloads/provenance-pixie-v1.4.json) for source hashes. See the [integration and file map](NativeDownloads/docs/INTEGRATION-MAP.md), [module ownership](NativeDownloads/README.md) and [data contracts](NativeDownloads/docs/CONTRACTS.md). Historical tooling remains available in Git history.
 
 ## Reporting issues and announcements
 
@@ -60,7 +62,7 @@ See [BUILD-pixie-v1.3.md](BUILD-pixie-v1.3.md) for the current IPA build command
 
 The original EeveeSpotifyReincarnated project is maintained by [jaydenjcpy](https://github.com/jaydenjcpy), [faroukbmiled](https://github.com/faroukbmiled), and [Mod4](https://github.com/M0d-4). Upstream history and contributions also include [estrogencat](https://github.com/estrogencat), [Skye](https://github.com/Meeep1), [whoeevee](https://github.com/whoeevee), and [Spikerko](https://github.com/Spikerko).
 
-Pixie Manager v1.3 was ported from [Glongq/Vitrine-Pixie](https://github.com/Glongq/Vitrine-Pixie) to EeveeSpotify 7.0.0 / Spotify 9.1.92. The native patchers validate the exact Spotify binary and guarded instruction bytes.
+Pixie Manager v1.3 and v1.4 were ported from [Glongq/Vitrine-Pixie](https://github.com/Glongq/Vitrine-Pixie) to EeveeSpotify 7.0.0 / Spotify 9.1.92. The native patchers validate the exact Spotify binary and guarded instruction bytes.
 
 **OpenAI Codex** produced the native-download implementation, integration, documentation and local builds under **Glongq's direction**. Glongq performed device testing and supplied feedback. This fork is independent of the upstream maintainers.
 

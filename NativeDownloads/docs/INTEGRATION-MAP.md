@@ -5,7 +5,7 @@ This map describes the existing implementation; it does not introduce a new API.
 
 ## Start here
 
-1. [Build guide](../../BUILD-pixie-v1.3.md): supported companion-library packaging.
+1. [Build guide](../../BUILD-pixie-v1.4.md): supported companion-library packaging.
 2. [Target manifest](../targets/spotify-9.1.92.json): exact Spotify identity,
    guarded native addresses, all production translation units and dependency groups.
    Use `tools/pixie_target.py` to resolve sources and include directories.
