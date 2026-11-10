@@ -43,7 +43,7 @@ def main():
         parser.error("Choose a new output folder; the output IPA already exists")
     eevee = args.eevee_dylib.resolve() if args.eevee_dylib else None
     if eevee:
-        run("codesign", "--verify", "--strict", eevee)
+        # The input dylib may be unsigned; it is signed ad-hoc and verified later on the staged copy.
         run("xcrun", "dyld_info", "-validate_only", eevee)
         if b"EeveePixieUpdateArtistDownloads" not in eevee.read_bytes():
             raise RuntimeError("The rebuilt EeveeSpotify lacks the Pixie artist controls")
