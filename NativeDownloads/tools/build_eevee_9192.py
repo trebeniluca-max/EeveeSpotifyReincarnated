@@ -1,4 +1,4 @@
-"""Build the guarded SpotifyAudioProbe overlay for the supplied EeveeSpotify 7.0.0 / Spotify 9.1.92 IPA."""
+"""Build the guarded SpotifyAudioProbe overlay for the supplied EeveeSpotify 7.0.0 / Spotify 9.1.92 IPA. lol"""
 import argparse
 import hashlib
 import json
