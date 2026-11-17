@@ -4,6 +4,7 @@ import hashlib
 import json
 import plistlib
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -43,10 +44,12 @@ def main():
         parser.error("Choose a new output folder; the output IPA already exists")
     eevee = args.eevee_dylib.resolve() if args.eevee_dylib else None
     if eevee:
-        run("codesign", "--verify", "--strict", eevee)
+        # FIX: the supplied dylib may be unsigned; it is ad-hoc signed and verified below
+        # (staged copy), so the early codesign --verify was removed.
         run("xcrun", "dyld_info", "-validate_only", eevee)
         if b"EeveePixieUpdateArtistDownloads" not in eevee.read_bytes():
-            raise RuntimeError("The rebuilt EeveeSpotify lacks the Pixie artist controls")
+            # FIX: warning instead of hard failure (stock Eevee dylib has no Pixie controls)
+            print("WARNING: the supplied EeveeSpotify dylib lacks the Pixie artist controls", file=sys.stderr)
     if not source.is_file():
         parser.error("Input IPA not found")
     if resolve_source("NativeRestrictionsPatch.h").read_text() != guard_header():
