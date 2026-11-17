@@ -8,12 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       ipa_url:
-        description: 'Optional HTTPS URL to the compatible Spotify 9.1.92 / EeveeSpotify 7.0.0 IPA'
-        required: false
-        default: ''
-        type: string
-      eevee_dylib_url:
-        description: 'HTTPS URL of EeveeSpotify.dylib rebuilt from these sources; required for packaging'
+        description: 'HTTPS URL to the compatible Spotify 9.1.92 / EeveeSpotify 7.0.0 IPA'
         required: false
         default: ''
         type: string
@@ -43,26 +38,89 @@ jobs:
           path: outputs/ci-host-tests
           retention-days: 7
 
-  package:
+  # Builds EeveeSpotify.dylib from THESE sources (includes the Pixie artist controls).
+  build-eevee:
     if: github.event_name == 'workflow_dispatch' && inputs.ipa_url != ''
-    needs: validate
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode (iOS 26 SDK needed for the glass controls)
+        run: |
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$XC" ] || { echo "Xcode 26 not found on runner"; ls /Applications | grep -i xcode; exit 1; }
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install build tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          brew install ldid make fakeroot dpkg
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Install Theos
+        run: |
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
+      - name: Build and vendor Orion
+        run: |
+          git clone --recursive --depth 1 https://github.com/theos/orion.git "$RUNNER_TEMP/orion"
+          cd "$RUNNER_TEMP/orion"
+          make vendor FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          ls "$THEOS/vendor/lib"
+
+      - name: Build EeveeSwiftProtobuf.framework
+        env:
+          THEOS_PACKAGE_SCHEME: rootless
+        run: Tools/SwiftProtobufBuild/build-eeveeswiftprotobuf.sh
+
+      - name: Build EeveeSpotify.dylib
+        env:
+          THEOS_PACKAGE_SCHEME: rootless
+        run: |
+          gmake -j4 all FINALPACKAGE=1 \
+            REPO_SLUG="${{ github.repository }}" BRANCH_NAME="${{ github.ref_name }}"
+          DYLIB=.theos/obj/EeveeSpotify.dylib
+          test -f "$DYLIB"
+          codesign --force --sign - --timestamp=none "$DYLIB"
+          grep -q EeveePixieUpdateArtistDownloads "$DYLIB" || { echo "Pixie artist controls missing from dylib"; exit 1; }
+          mkdir -p outputs/eevee
+          cp "$DYLIB" outputs/eevee/EeveeSpotify.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EeveeSpotify-dylib
+          path: outputs/eevee/EeveeSpotify.dylib
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    needs: build-eevee
+    if: github.event_name == 'workflow_dispatch' && inputs.ipa_url != ''
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Fetch supplied artifacts and package
+      - uses: actions/download-artifact@v4
+        with:
+          name: EeveeSpotify-dylib
+          path: ${{ runner.temp }}/eevee
+      - name: Fetch IPA and package
         env:
           SOURCE_IPA_URL: ${{ inputs.ipa_url }}
-          EEVEE_DYLIB_URL: ${{ inputs.eevee_dylib_url }}
         run: |
-          case "$SOURCE_IPA_URL" in https://*) ;; *) exit 1 ;; esac
-          case "$EEVEE_DYLIB_URL" in https://*) ;; *) echo 'A current Eevee library is required'; exit 1 ;; esac
+          case "$SOURCE_IPA_URL" in https://*) ;; *) echo 'ipa_url must be https'; exit 1 ;; esac
           curl --proto '=https' --proto-redir '=https' --location --fail "$SOURCE_IPA_URL" --output "$RUNNER_TEMP/source.ipa"
-          curl --proto '=https' --proto-redir '=https' --location --fail "$EEVEE_DYLIB_URL" --output "$RUNNER_TEMP/EeveeSpotify.dylib"
           mkdir -p outputs/ci-package
-          python3 NativeDownloads/tools/build_eevee_9192.py "$RUNNER_TEMP/source.ipa" --eevee-dylib "$RUNNER_TEMP/EeveeSpotify.dylib" --output outputs/ci-package/Spotify-9.1.92-EeveeSpotify-Pixie-v1.4.ipa > outputs/ci-package/build-report.json
+          python3 NativeDownloads/tools/build_eevee_9192.py "$RUNNER_TEMP/source.ipa" \
+            --eevee-dylib "$RUNNER_TEMP/eevee/EeveeSpotify.dylib" \
+            --output outputs/ci-package/Spotify-9.1.92-EeveeSpotify-Pixie-v1.4.ipa > outputs/ci-package/build-report.json
       - uses: actions/upload-artifact@v4
         with:
           name: eevee-9192-pixie-1.4
